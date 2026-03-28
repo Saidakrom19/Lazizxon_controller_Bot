@@ -55,17 +55,14 @@ SYSTEM_PROMPT = """
 - Сен "яхши" ёки "тайёр" деган сўзларга текширмасдан ишонмайсан.
 - Мутахассис тайёрлаган жавобни Раҳбарга кўрсатишдан олдин қаттиқ сифат фильтридан ўтказ. 
 - Агар жавоб юзаки, нотўғри ёки компания манфаатига зид бўлса, Раҳбар кўришидан аввал мутахассисга қайтар ва қайта ишлаттир.
-- Низоли ёки мавҳум вазиятларда тезда оқилона қарор қабул қил ва муаммони ҳал эт.
 
 ━━━━━━━━━━━━━━━━━━━━━━━
 🧠 СЕНИНГ ХАРАКТЕРИНГ ВА ФИКРЛАШИНГ
 ━━━━━━━━━━━━━━━━━━━━━━━
 
 - Қаттиққўл, лекин адолатли ва ростгўй.
-- Рақамларга ва фактларга асосланган (Ҳисоб-китоб ва аналитикани яхши тушунасан).
-- Деталларга ўта эътиборли. Вазифанинг бирор қисми эсдан чиқишига йўл қўймайсан.
+- Рақамларга ва фактларга асосланган. Деталларга ўта эътиборли.
 - Эмоцияга берилмайсан, фақат компания манфаати ва натижа учун ишлайсан.
-- Сен салбий вазиятларни ҳам компания манфаати томонга ўзгартира оладиган дипломат ва стратегсан.
 
 ━━━━━━━━━━━━━━━━━━━━━━━
 📤 ЖАВОБ ФОРМАТИ ВА ҚОИДАЛАР
@@ -74,13 +71,13 @@ SYSTEM_PROMPT = """
 1. Жавоблар аниқ, лўнда ва структурали бўлсин. Кераксиз назария ёзма.
 2. Қабул қилинган вазифани кимга йўналтирганинг ва қачонга (дедлайн) сўраганингни аниқ айт.
 3. Мутахассисдан келган ишни текшираётганда: хатони очиқ кўрсат, эътироз билдир ва тўғирлашни талаб қил.
-4. Жавоблар фақат ўзбек тилида (кирилл алифбосида) бўлсин. Лотин алифбосидан фойдаланма.
+4. Жавоблар фақат ўзбек тилида (кирилл алифбосида) бўлсин.
 
 Сен оддий кузатувчи эмассан. Сен вазифа 100% тўлиқ ва мукаммал бажарилмагунча тўхтамайдиган НАЗОРАТЧИСАН.
 """
 
 # ==========================================
-# ФУНКЦИЯЛАР
+# ФУНКЦИЯЛАР ВА АУДИО ГЕНЕРАЦИЯСИ
 # ==========================================
 
 def wants_text_reply(user_message: str) -> bool:
@@ -114,46 +111,52 @@ def generate_ai_reply(user_message: str) -> str:
         reply = "Жавоб тайёр бўлмади. Илтимос, саволни қайта юборинг."
     return reply
 
+# СИЗ ТАКЛИФ ҚИЛГАН ELEVENLABS ФУНКЦИЯСИ (ТАКОМИЛЛАШТИРИЛДИ)
+def generate_audio_elevenlabs(text, api_key, voice_id):
+    url = f"https://api.elevenlabs.io/v1/text-to-speech/{voice_id}"
+    headers = {
+        "Accept": "audio/mpeg",
+        "Content-Type": "application/json",
+        "xi-api-key": api_key
+    }
+    data = {
+        "text": text,
+        "model_id": "eleven_multilingual_v2",
+        "voice_settings": {
+            "stability": 0.5,
+            "similarity_boost": 0.75
+        }
+    }
+
+    response = requests.post(url, json=data, headers=headers)
+
+    if response.status_code == 200:
+        return response.content
+    else:
+        # Хатони фақат сервер журналига (log) ёзиб қўямиз, тизим тўхтамайди
+        logging.error(f"LOG: ElevenLabs API да муаммо: {response.text}")
+        return None
+
 async def send_voice_reply(update: Update, text: str):
     temp_audio_path = None
     try:
-        # ElevenLabs лимитини тежаш учун матн узунлигини чеклаймиз
         safe_text = text[:1500] if text else "Жавоб тайёр бўлмади."
 
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".mp3") as temp_audio:
-            temp_audio_path = temp_audio.name
+        # Янги алоҳида функция орқали аудио яратиш
+        audio_content = generate_audio_elevenlabs(safe_text, ELEVENLABS_API_KEY, VOICE_ID)
 
-        # ==========================================
-        # ELEVENLABS API ОРҚАЛИ ОВОЗ ГЕНЕРАЦИЯСИ
-        # ==========================================
-        url = f"https://api.elevenlabs.io/v1/text-to-speech/{VOICE_ID}"
-        
-        headers = {
-            "Accept": "audio/mpeg",
-            "Content-Type": "application/json",
-            "xi-api-key": ELEVENLABS_API_KEY
-        }
-        
-        data = {
-            "text": safe_text,
-            "model_id": "eleven_multilingual_v2", 
-            "voice_settings": {
-                "stability": 0.5,
-                "similarity_boost": 0.75
-            }
-        }
-        
-        response = requests.post(url, json=data, headers=headers)
-        
-        if response.status_code == 200:
-            with open(temp_audio_path, 'wb') as f:
-                f.write(response.content)
+        # Агар овоз муваффақиятли яратилган бўлса
+        if audio_content:
+            with tempfile.NamedTemporaryFile(delete=False, suffix=".mp3") as temp_audio:
+                temp_audio_path = temp_audio.name
+                temp_audio.write(audio_content)
+
+            with open(temp_audio_path, "rb") as audio_file:
+                await update.message.reply_voice(voice=audio_file)
         else:
-            raise Exception(f"ElevenLabs API хатолиги: {response.text}")
-
-        # Тайёр аудио файлни Телеграмга юбориш
-        with open(temp_audio_path, "rb") as audio_file:
-            await update.message.reply_voice(voice=audio_file)
+            # АГАР ЛИМИТ ТУГАСА ЁКИ ХАТОЛИК БЎЛСА (Fallback)
+            fallback_text = f"🎙 *Овозли жавоб яратишда узилиш бўлди (API муаммоси).* \n\n*Жавоб матни:*\n{safe_text}"
+            await update.message.reply_text(fallback_text, parse_mode='Markdown')
 
     except Exception as e:
         logging.exception("Ovozli javob yuborishda xatolik")
@@ -179,7 +182,7 @@ async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
         "3. Мен одатда овозли жавоб қайтараман.\n"
         "4. Агар матнли жавоб керак бўлса, \"матнда жавоб бер\" деб қўшиб ёзинг.\n\n"
         "Мисол:\n"
-        "Матнда жавоб бер. Янги филиал очиш бўйича маркетинг ва молия бўлимига вазифа бер. Смета ва реклама режасини эртагача тайёрлашсин."
+        "Янги филиал очиш бўйича маркетинг ва молия бўлимига вазифа бер. Смета ва реклама режасини эртагача тайёрлашсин."
     )
     await update.message.reply_text(help_text)
 
