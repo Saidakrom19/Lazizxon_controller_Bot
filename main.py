@@ -1,3 +1,50 @@
+import requests
+ELEVENLABS_API_KEY = os.getenv("ELEVENLABS_API_KEY")
+VOICE_ID = os.getenv("VOICE_ID")
+
+async def send_voice_reply(update: Update, text: str):
+    temp_audio_path = None
+    try:
+        # ElevenLabs лимитини тежаш ва хатоликни олдини олиш учун матн узунлигини чеклаймиз
+        safe_text = text[:1000] if text else "Жавоб тайёр бўлмади."
+
+        with tempfile.NamedTemporaryFile(delete=False, suffix=".mp3") as temp_audio:
+            temp_audio_path = temp_audio.name
+
+        # ElevenLabs API га сўров юбориш
+        url = f"https://api.elevenlabs.io/v1/text-to-speech/{VOICE_ID}"
+        headers = {
+            "Accept": "audio/mpeg",
+            "Content-Type": "application/json",
+            "xi-api-key": ELEVENLABS_API_KEY
+        }
+        data = {
+            "text": safe_text,
+            "model_id": "eleven_multilingual_v2", # Ўзбек тили учун энг яхши модел
+            "voice_settings": {
+                "stability": 0.5,
+                "similarity_boost": 0.75
+            }
+        }
+
+        response = requests.post(url, json=data, headers=headers)
+
+        if response.status_code == 200:
+            with open(temp_audio_path, 'wb') as f:
+                f.write(response.content)
+        else:
+            raise Exception(f"ElevenLabs API хатолиги: {response.text}")
+
+        # Тайёр аудио файлни Телеграмга юбориш
+        with open(temp_audio_path, "rb") as audio_file:
+            await update.message.reply_voice(voice=audio_file)
+
+    except Exception as e:
+        logging.exception("Овозли жавоб юборишда хатолик")
+        await update.message.reply_text(f"Хатолик юз берди: {str(e)}")
+    finally:
+        if temp_audio_path and os.path.exists(temp_audio_path):
+            os.remove(temp_audio_path)
 import os
 import logging
 import tempfile
