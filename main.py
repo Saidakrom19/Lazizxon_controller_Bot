@@ -1,68 +1,28 @@
-import requests
-ELEVENLABS_API_KEY = os.getenv("ELEVENLABS_API_KEY")
-VOICE_ID = os.getenv("VOICE_ID")
-
-async def send_voice_reply(update: Update, text: str):
-    temp_audio_path = None
-    try:
-        # ElevenLabs лимитини тежаш ва хатоликни олдини олиш учун матн узунлигини чеклаймиз
-        safe_text = text[:1000] if text else "Жавоб тайёр бўлмади."
-
-        with tempfile.NamedTemporaryFile(delete=False, suffix=".mp3") as temp_audio:
-            temp_audio_path = temp_audio.name
-
-        # ElevenLabs API га сўров юбориш
-        url = f"https://api.elevenlabs.io/v1/text-to-speech/{VOICE_ID}"
-        headers = {
-            "Accept": "audio/mpeg",
-            "Content-Type": "application/json",
-            "xi-api-key": ELEVENLABS_API_KEY
-        }
-        data = {
-            "text": safe_text,
-            "model_id": "eleven_multilingual_v2", # Ўзбек тили учун энг яхши модел
-            "voice_settings": {
-                "stability": 0.5,
-                "similarity_boost": 0.75
-            }
-        }
-
-        response = requests.post(url, json=data, headers=headers)
-
-        if response.status_code == 200:
-            with open(temp_audio_path, 'wb') as f:
-                f.write(response.content)
-        else:
-            raise Exception(f"ElevenLabs API хатолиги: {response.text}")
-
-        # Тайёр аудио файлни Телеграмга юбориш
-        with open(temp_audio_path, "rb") as audio_file:
-            await update.message.reply_voice(voice=audio_file)
-
-    except Exception as e:
-        logging.exception("Овозли жавоб юборишда хатолик")
-        await update.message.reply_text(f"Хатолик юз берди: {str(e)}")
-    finally:
-        if temp_audio_path and os.path.exists(temp_audio_path):
-            os.remove(temp_audio_path)
 import os
 import logging
 import tempfile
+import requests
 from dotenv import load_dotenv
 from openai import OpenAI
 from telegram import Update
 from telegram.ext import ApplicationBuilder, CommandHandler, MessageHandler, ContextTypes, filters
 
+# .env файлни ўқиш
 load_dotenv()
 
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+ELEVENLABS_API_KEY = os.getenv("ELEVENLABS_API_KEY")
+VOICE_ID = os.getenv("VOICE_ID")
 
 if not TELEGRAM_BOT_TOKEN:
     raise ValueError("TELEGRAM_BOT_TOKEN topilmadi. .env faylni tekshiring.")
 if not OPENAI_API_KEY:
     raise ValueError("OPENAI_API_KEY topilmadi. .env faylni tekshiring.")
+if not ELEVENLABS_API_KEY or not VOICE_ID:
+    raise ValueError("ELEVENLABS_API_KEY ёки VOICE_ID топилмади. .env файлини текширинг.")
 
+# Логларни созлаш
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     level=logging.INFO,
@@ -70,186 +30,86 @@ logging.basicConfig(
 
 client = OpenAI(api_key=OPENAI_API_KEY)
 
+# ==========================================
+# МУКАММАЛ НАЗОРАТЧИ ПРОМПТИ (CONTROLLER)
+# ==========================================
 SYSTEM_PROMPT = """
-Сен дунё даражасидаги юқори даражали операцион директор (COO), бизнес контролёр ва execution менежерсан.
+Сен дунё даражасидаги юқори малакали операцион директор (COO), компания "прокурори" ва бош назоратчи менежерсан.
 
-Сен компаниядаги энг муҳим роллардан бирисан.
+Сен компаниядаги энг муҳим роллардан бирисан. Сен шунчаки воситачи эмассан, сен — компаниянинг ижро машинаси, қонун-қоидалар ҳимоячиси ва таъсисчининг (раҳбарнинг) ишончли вакилисан.
 
-Сенинг вазифанг — гап эмас, натижа.
+━━━━━━━━━━━━━━━━━━━━━━━
+🏢 СЕНИНГ ВАЗИФА ВА ВАКОЛАТЛАРИНГ
+━━━━━━━━━━━━━━━━━━━━━━━
 
-СЕНГИ РОЛИНГ
+1. КОММУНИКАЦИЯ ВА ИЕРАРХИЯ:
+- Раҳбар ва жамоа ўртасидаги ягона кўприксан. Раҳбар ходимлар билан тўғридан-тўғри ишламайди, барчаси сен орқали ўтади.
+- Мутахассисларнинг ишини режалаштирасан, мувофиқлаштирасан ва қаттиқ назорат қиласан.
 
-Сен:
-- раҳбар ва жамоа ўртасида ягона кўприксан
-- барча вазифалар сен орқали ўтади
-- сен execution учун тўлиқ жавобгарсан
+2. ВАЗИФАЛАРНИ БОШҚАРИШ:
+- Раҳбардан келган топшириқни чуқур таҳлил қил, мақсадини англа ва уни қадамларга бўл.
+- Вазифани айнан керакли мутахассисга (Маркетолог, Молиячи, Юрист ва ҳ.к.) йўналтир.
+- Ҳар бир вазифа учун қатъий дедлайн белгила ва унинг бажарилишини кузатиб бор.
 
-Компанияда:
+3. СИФАТ ВА ИНТИЗОМ НАЗОРАТИ:
+- Сен "яхши" ёки "тайёр" деган сўзларга текширмасдан ишонмайсан.
+- Мутахассис тайёрлаган жавобни Раҳбарга кўрсатишдан олдин қаттиқ сифат фильтридан ўтказ. 
+- Агар жавоб юзаки, нотўғри ёки компания манфаатига зид бўлса, Раҳбар кўришидан аввал мутахассисга қайтар ва қайта ишлаттир.
+- Низоли ёки мавҳум вазиятларда тезда оқилона қарор қабул қил ва муаммони ҳал эт.
 
-Раҳбар → Сен → Мутахассис  
-Мутахассис → Сен → Раҳбар  
+━━━━━━━━━━━━━━━━━━━━━━━
+🧠 СЕНИНГ ХАРАКТЕРИНГ ВА ФИКРЛАШИНГ
+━━━━━━━━━━━━━━━━━━━━━━━
 
-Ҳеч ким тўғридан-тўғри ишламайди.
+- Қаттиққўл, лекин адолатли ва ростгўй.
+- Рақамларга ва фактларга асосланган (Ҳисоб-китоб ва аналитикани яхши тушунасан).
+- Деталларга ўта эътиборли. Вазифанинг бирор қисми эсдан чиқишига йўл қўймайсан.
+- Эмоцияга берилмайсан, фақат компания манфаати ва натижа учун ишлайсан.
+- Сен салбий вазиятларни ҳам компания манфаати томонга ўзгартира оладиган дипломат ва стратегсан.
 
-АСОСИЙ МАҚСАДИНГ
+━━━━━━━━━━━━━━━━━━━━━━━
+📤 ЖАВОБ ФОРМАТИ ВА ҚОИДАЛАР
+━━━━━━━━━━━━━━━━━━━━━━━
 
-- вазифаларни 100% бажартириш
-- дедлайнларни сақлатиш
-- сифатни назорат қилиш
-- раҳбарни операцион хаосдан ҳимоя қилиш
+1. Жавоблар аниқ, лўнда ва структурали бўлсин. Кераксиз назария ёзма.
+2. Қабул қилинган вазифани кимга йўналтирганинг ва қачонга (дедлайн) сўраганингни аниқ айт.
+3. Мутахассисдан келган ишни текшираётганда: хатони очиқ кўрсат, эътироз билдир ва тўғирлашни талаб қил.
+4. Жавоблар фақат ўзбек тилида (кирилл алифбосида) бўлсин. Лотин алифбосидан фойдаланма.
 
-Сенинг KPI:
-
-- вазифа бажарилиш %
-- дедлайнга риоя %
-- қайта ишлашлар сони
-- хатолар сони
-- execution тезлиги
-
-ВАЗИФА БИЛАН ИШЛАШ
-
-Раҳбар вазифа берганда:
-
-1. Вазифани чуқур таҳлил қил
-2. Аниқ мақсадга айлантир
-3. Қадамларга бўл
-4. Керакли мутахассисни танла
-5. Дедлайн белгила
-6. Назорат нуқталарини қўй
-
-Агар вазифа ноаниқ бўлса:
-- дарҳол 3 та аниқлаштирувчи савол бер
-
-ТАҚСИМЛАШ
-
-Сен:
-
-- тўғри одамга тўғри иш берасан
-- вазифани қайта формулировка қиласан
-- тушунарли қилиб етказасан
-
-Ёмон тақсимланган вазифа = сенинг хатонг
-
-НАЗОРАТ
-
-Сен:
-
-- ҳар бир вазифани кузатасан
-- дедлайнни назорат қиласан
-- кечикишни олдиндан аниқлайсан
-
-Агар кечикиш бўлса:
-- дарҳол реакция қил
-- сабабни топ
-- янги режа бер
-
-ҚАБУЛ ҚИЛИШ
-
-Ҳеч қачон текширмасдан қабул қилма.
-
-Текшириш:
-
-- вазифа тўлиқми?
-- сифат талабга жавоб берадими?
-- бизнес мақсадга хизмат қиладими?
-
-Агар камчилик бўлса:
-
-1. Аниқ эътироз бер
-2. Қайта ишлаш топшир
-3. Янги дедлайн қўй
-
-ҚАТТИҚ ҚОИДАЛАР
-
-Сен ҳеч қачон:
-
-- "яхши" деб юзаки қабул қилмайсан
-- текширилмаган ишни раҳбарга чиқармайсан
-- нотўлиқ ишни ёпмайсан
-- масъулиятни бошқага ташламайсан
-
-СЕНГИ ФИКРЛАШИНГ
-
-- қаттиқ
-- тизимли
-- натижага йўналтирилган
-- деталларга эътиборли
-- масъулиятли
-
-Сен эмоция билан эмас, натижа билан ишлайсан.
-
-ЖАВОБ ФОРМАТИ
-
-Раҳбарга жавоб:
-
-1. Вазият таҳлили
-2. Вазифа структураси
-3. Тақсимот (кимга)
-4. Дедлайн
-5. Назорат нуқталари
-6. Рисклар
-
-Ходимга жавоб:
-
-1. Камчилик
-2. Нима нотўғри
-3. Қандай тўғрилаш
-4. Янги дедлайн
-
-ЯКУНИЙ ПРИНЦИП
-
-Вазифа тугади дегани:
-
-- иш топширилди → ЙЎҚ
-- иш қилинди → ЙЎҚ
-- иш қабул қилинди → ҲАМ ЙЎҚ
-
-Фақат:
-
-натижа бизнес мақсадга хизмат қилса — ТУГАДИ
-
-
-Сен оддий назоратчи эмассан.
-
-Сен компаниядаги execution системасан.
+Сен оддий кузатувчи эмассан. Сен вазифа 100% тўлиқ ва мукаммал бажарилмагунча тўхтамайдиган НАЗОРАТЧИСАН.
 """
+
+# ==========================================
+# ФУНКЦИЯЛАР
+# ==========================================
 
 def wants_text_reply(user_message: str) -> bool:
     text = user_message.lower()
-
     triggers = [
-        "матнда жавоб бер",
-        "матнли жавоб бер",
-        "матнда ёз",
-        "матнда ёзиб бер",
-        "ёзма жавоб бер",
-        "текст қилиб бер",
-        "text qilib ber",
-        "matnda javob ber",
-        "matnli javob ber",
-        "yozma javob ber",
+        "матнда жавоб бер", "матнли жавоб бер", "матнда ёз", 
+        "матнда ёзиб бер", "ёзма жавоб бер", "текст қилиб бер", 
+        "text qilib ber", "matnda javob ber", "matnli javob ber", "yozma javob ber"
     ]
-
     return any(trigger in text for trigger in triggers)
 
 def speech_to_text(audio_file_path: str) -> str:
     with open(audio_file_path, "rb") as audio_file:
         transcription = client.audio.transcriptions.create(
-            model="gpt-4o-mini-transcribe",
+            model="whisper-1", 
             file=audio_file,
         )
     return (transcription.text or "").strip()
 
 def generate_ai_reply(user_message: str) -> str:
-    response = client.responses.create(
+    response = client.chat.completions.create(
         model="gpt-4o-mini",
-        input=[
+        messages=[
             {"role": "system", "content": SYSTEM_PROMPT},
             {"role": "user", "content": user_message},
         ],
     )
-
-    reply = response.output_text.strip() if response.output_text else ""
+    
+    reply = response.choices[0].message.content.strip() if response.choices else ""
     if not reply:
         reply = "Жавоб тайёр бўлмади. Илтимос, саволни қайта юборинг."
     return reply
@@ -257,18 +117,41 @@ def generate_ai_reply(user_message: str) -> str:
 async def send_voice_reply(update: Update, text: str):
     temp_audio_path = None
     try:
+        # ElevenLabs лимитини тежаш учун матн узунлигини чеклаймиз
         safe_text = text[:1500] if text else "Жавоб тайёр бўлмади."
 
         with tempfile.NamedTemporaryFile(delete=False, suffix=".mp3") as temp_audio:
             temp_audio_path = temp_audio.name
 
-        speech_response = client.audio.speech.create(
-            model="gpt-4o-mini-tts",
-            voice="alloy",
-            input=safe_text,
-        )
-        speech_response.stream_to_file(temp_audio_path)
+        # ==========================================
+        # ELEVENLABS API ОРҚАЛИ ОВОЗ ГЕНЕРАЦИЯСИ
+        # ==========================================
+        url = f"https://api.elevenlabs.io/v1/text-to-speech/{VOICE_ID}"
+        
+        headers = {
+            "Accept": "audio/mpeg",
+            "Content-Type": "application/json",
+            "xi-api-key": ELEVENLABS_API_KEY
+        }
+        
+        data = {
+            "text": safe_text,
+            "model_id": "eleven_multilingual_v2", 
+            "voice_settings": {
+                "stability": 0.5,
+                "similarity_boost": 0.75
+            }
+        }
+        
+        response = requests.post(url, json=data, headers=headers)
+        
+        if response.status_code == 200:
+            with open(temp_audio_path, 'wb') as f:
+                f.write(response.content)
+        else:
+            raise Exception(f"ElevenLabs API хатолиги: {response.text}")
 
+        # Тайёр аудио файлни Телеграмга юбориш
         with open(temp_audio_path, "rb") as audio_file:
             await update.message.reply_voice(voice=audio_file)
 
@@ -281,21 +164,22 @@ async def send_voice_reply(update: Update, text: str):
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     welcome_text = (
-        "Салом! Мен Лазизхон назоратчиман.\n\n"
-        "Мен одатда сизга фақат овозли жавоб бераман.\n"
-        "Агар матнли жавоб керак бўлса, хабарингизда:\n"
-        "\"матнда жавоб бер\" деб ёзинг."
+        "Ассалому алайкум! Мен компаниянинг Бош Назоратчисиман.\n\n"
+        "Барча вазифалар ва топшириқларни мен орқали беришингиз мумкин. Мен уларни тегишли мутахассисларга тақсимлайман ва бажарилишини қатъий назорат қиламан.\n\n"
+        "Мен одатда фақат овозли жавоб бераман.\n"
+        "Агар матнли жавоб керак бўлса, хабарингизда: \"матнда жавоб бер\" деб ёзинг."
     )
     await update.message.reply_text(welcome_text)
 
 async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
     help_text = (
-        "Фойдаланиш:\n\n"
-        "1. Матн ёки овозли хабар юборинг\n"
-        "2. Бот одатда фақат овозли жавоб қайтаради\n"
-        "3. Агар матнли жавоб керак бўлса, \"матнда жавоб бер\" деб ёзинг\n\n"
+        "Фойдаланиш қоидалари:\n\n"
+        "1. Менга топшириқ ёки вазифани овозли ёки матн кўринишида юборинг.\n"
+        "2. Мен уни таҳлил қилиб, қайси мутахассисга йўналтириш ва қандай дедлайн қўйишни белгилайман.\n"
+        "3. Мен одатда овозли жавоб қайтараман.\n"
+        "4. Агар матнли жавоб керак бўлса, \"матнда жавоб бер\" деб қўшиб ёзинг.\n\n"
         "Мисол:\n"
-        "Матнда жавоб бер. Реклама бор, лекин сотув йўқ. Муаммони таҳлил қил."
+        "Матнда жавоб бер. Янги филиал очиш бўйича маркетинг ва молия бўлимига вазифа бер. Смета ва реклама режасини эртагача тайёрлашсин."
     )
     await update.message.reply_text(help_text)
 
@@ -356,7 +240,7 @@ def main():
     app.add_handler(MessageHandler(filters.VOICE, handle_voice_message))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_text_message))
 
-    print("Bot ishga tushdi...")
+    print("Controller (Назоратчи) bot ишга тушди...")
     app.run_polling()
 
 if __name__ == "__main__":
