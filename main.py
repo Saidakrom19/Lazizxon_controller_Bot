@@ -3,8 +3,10 @@ import re
 import json
 import logging
 import tempfile
+from io import BytesIO
 from typing import Dict, Any, Optional
 
+import requests
 from dotenv import load_dotenv
 from openai import OpenAI
 from telegram import Update
@@ -14,6 +16,9 @@ load_dotenv()
 
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+ELEVENLABS_API_KEY = os.getenv("ELEVENLABS_API_KEY")
+VOICE_ID = os.getenv("VOICE_ID")
+
 LEADER_USERNAME = os.getenv("LEADER_USERNAME", "lazizxon").lstrip("@")
 CONTROLLER_BOT_USERNAME = os.getenv("CONTROLLER_BOT_USERNAME", "Lazizxon_controller_Bot").lstrip("@")
 
@@ -21,6 +26,10 @@ if not TELEGRAM_BOT_TOKEN:
     raise ValueError("TELEGRAM_BOT_TOKEN topilmadi")
 if not OPENAI_API_KEY:
     raise ValueError("OPENAI_API_KEY topilmadi")
+if not ELEVENLABS_API_KEY:
+    raise ValueError("ELEVENLABS_API_KEY topilmadi")
+if not VOICE_ID:
+    raise ValueError("VOICE_ID topilmadi")
 
 logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
@@ -200,6 +209,35 @@ def speech_to_text(audio_file_path: str) -> str:
         )
     return (transcription.text or "").strip()
 
+def elevenlabs_text_to_speech(text: str) -> BytesIO:
+    url = f"https://api.elevenlabs.io/v1/text-to-speech/{VOICE_ID}?output_format=mp3_44100_128"
+    headers = {
+        "xi-api-key": ELEVENLABS_API_KEY,
+        "Content-Type": "application/json",
+    }
+    data = {
+        "text": text[:2500],
+        "model_id": "eleven_multilingual_v2",
+    }
+
+    response = requests.post(url, json=data, headers=headers, timeout=120)
+
+    if response.status_code != 200:
+        raise RuntimeError(f"ElevenLabs xatolik: {response.status_code} | {response.text}")
+
+    audio = BytesIO(response.content)
+    audio.name = "voice.mp3"
+    audio.seek(0)
+    return audio
+
+async def send_voice_reply(update: Update, text: str):
+    try:
+        audio_file = elevenlabs_text_to_speech(text)
+        await update.message.reply_voice(voice=audio_file)
+    except Exception as e:
+        logger.exception("ElevenLabs ovozli javob xatosi")
+        await update.message.reply_text(f"Хатолик юз берди: {str(e)}")
+
 def parse_controller_json(raw_text: str) -> Dict[str, Any]:
     try:
         return json.loads(raw_text)
@@ -302,6 +340,7 @@ async def handle_text(update: Update, context: ContextTypes.DEFAULT_TYPE):
         plan = generate_controller_plan(user_message)
         text = build_controller_text(plan)
         await update.message.reply_text(text)
+        await send_voice_reply(update, text)
     except Exception as e:
         logger.exception("Controller text error")
         await update.message.reply_text(f"Хатолик юз берди: {str(e)}")
@@ -331,6 +370,7 @@ async def handle_voice(update: Update, context: ContextTypes.DEFAULT_TYPE):
         plan = generate_controller_plan(user_text)
         text = build_controller_text(plan)
         await update.message.reply_text(text)
+        await send_voice_reply(update, text)
 
     except Exception as e:
         logger.exception("Controller voice error")
